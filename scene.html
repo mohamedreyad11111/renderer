@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>سورة الإخلاص — Ofoq / Mediabunny</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; outline: none; }
+        body, html {
+            width: 100%; height: 100%;
+            background-color: #050505; color: #f2f2f2;
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden; font-family: system-ui, -apple-system, sans-serif;
+        }
+        #render-viewport {
+            position: relative; width: 100vw; height: 100vh;
+            display: flex; align-items: center; justify-content: center;
+        }
+        canvas {
+            max-width: 90%; max-height: 90%;
+            aspect-ratio: 16 / 9; object-fit: contain;
+            box-shadow: 0 0 50px rgba(212, 175, 55, 0.15);
+            border-radius: 12px; border: 1px solid #1a1a1a;
+        }
+        #render-overlay {
+            position: absolute; top: 24px; right: 24px;
+            background: rgba(18, 18, 18, 0.95);
+            border: 1px solid #333;
+            padding: 12px 24px; border-radius: 999px;
+            display: flex; align-items: center; gap: 12px; z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+        .spinner {
+            width: 18px; height: 18px; flex-shrink: 0;
+            border: 2px solid #d4af37; border-top-color: transparent;
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #status-text { font-size: 14px; color: #f3e5ab; font-weight: 600; }
+    </style>
+</head>
+<body>
+
+    <div id="render-viewport">
+        <canvas id="xCanvas" width="1920" height="1080"></canvas>
+        <div id="render-overlay">
+            <div class="spinner" id="spinner"></div>
+            <span id="status-text">جاري بدء التشغيل...</span>
+        </div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "mediabunny": "https://esm.sh/mediabunny@1.50.8"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import {
+            Output,
+            Mp4OutputFormat,
+            BufferTarget,
+            CanvasSource,
+            AudioBufferSource,
+            QUALITY_HIGH,
+            canEncodeAudio
+        } from 'mediabunny';
+
+        // بعض المتصفحات (خصوصًا Chrome على Linux) مفيهاش AAC encoder أصلي في WebCodecs.
+        // الحل الرسمي من Mediabunny: نسجّل محرك AAC بديل (WASM) لو الأصلي مش موجود.
+        import { registerAacEncoder } from 'https://esm.sh/@mediabunny/aac-encoder?external=mediabunny';
+        if (!(await canEncodeAudio('aac'))) {
+            registerAacEncoder();
+        }
+
+        // ---------- إعدادات ثابتة لسورة الإخلاص (112) ----------
+        const SURAH_NUMBER = 112;
+        const SURAH_NAME = 'سورة الإخلاص';
+        const AYAH_COUNT = 4;
+        const RECITER = 'Alafasy_128kbps';
+        const FPS = 30;
+        const W = 1920, H = 1080;
+        const BG_PATH = 'assets/background.jpg';
+        const OUTPUT_FILENAME = 'Surah-Al-Ikhlas.mp4';
+
+        const canvas = document.getElementById('xCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const statusText = document.getElementById('status-text');
+        const spinner = document.getElementById('spinner');
+
+        window.__ofoqStatus = 'pending';
+
+        function pad3(n){ return String(n).padStart(3, '0'); }
+
+        // ---------- جلب نص الآية (مع بديل CORS) ----------
+        async function fetchAyahText(surah, ayah) {
+            const url = `https://api.alquran.cloud/v1/ayah/${surah}:${ayah}/quran-uthmani`;
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('fetch failed');
+                const data = await res.json();
+                return `﴿ ${data.data.text} ﴾`;
+            } catch (e) {
+                const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(url);
+                const res = await fetch(proxyUrl);
+                const data = await res.json();
+                return `﴿ ${data.data.text} ﴾`;
+            }
+        }
+
+        // ---------- جلب صوت الآية من everyayah.com (مع بديل CORS) ----------
+        async function fetchAyahAudioBuffer(surah, ayah, audioContext) {
+            const url = `https://everyayah.com/data/${RECITER}/${pad3(surah)}${pad3(ayah)}.mp3`;
+            let arrayBuf;
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error('fetch failed');
+                arrayBuf = await res.arrayBuffer();
+            } catch (e) {
+                const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(url);
+                const res = await fetch(proxyUrl);
+                arrayBuf = await res.arrayBuffer();
+            }
+            return audioContext.decodeAudioData(arrayBuf);
+        }
+
+        // ---------- تحميل صورة الخلفية (مع خلفية متدرجة بديلة لو الصورة غير موجودة) ----------
+        function loadBackgroundImage() {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = () => resolve(null); // بديل بدل ما نوقف الرندر كله
+                img.src = BG_PATH;
+            });
+        }
+
+        function arrayBufferToBase64(buffer){
+            let binary = '';
+            const bytes = new Uint8Array(buffer);
+            const chunkSize = 0x8000;
+            for (let i = 0; i < bytes.length; i += chunkSize){
+                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+            }
+            return btoa(binary);
+        }
+
+        // ---------- رسم فريم واحد مباشرة على الـ canvas ----------
+        function drawFrame(bgImage, ayahText, progress) {
+            ctx.clearRect(0, 0, W, H);
+
+            if (bgImage) {
+                const canvasRatio = W / H;
+                const imgRatio = bgImage.width / bgImage.height;
+                let sx, sy, sw, sh;
+                if (imgRatio > canvasRatio) {
+                    sh = bgImage.height;
+                    sw = sh * canvasRatio;
+                    sx = (bgImage.width - sw) / 2;
+                    sy = 0;
+                } else {
+                    sw = bgImage.width;
+                    sh = sw / canvasRatio;
+                    sx = 0;
+                    sy = (bgImage.height - sh) / 2;
+                }
+                ctx.drawImage(bgImage, sx, sy, sw, sh, 0, 0, W, H);
+            } else {
+                const g = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, W*0.7);
+                g.addColorStop(0, '#111827'); g.addColorStop(1, '#030712');
+                ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+            }
+
+            const overlay = ctx.createLinearGradient(0, 0, 0, H);
+            overlay.addColorStop(0, 'rgba(3,7,18,0.45)');
+            overlay.addColorStop(1, 'rgba(3,7,18,0.75)');
+            ctx.fillStyle = overlay;
+            ctx.fillRect(0, 0, W, H);
+
+            ctx.strokeStyle = '#d4af37';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(80, 80, W - 160, H - 160);
+
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = "bold 44px 'Amiri', 'Noto Naskh Arabic', serif";
+            ctx.fillStyle = '#d4af37';
+            ctx.shadowColor = 'rgba(0,0,0,0.7)';
+            ctx.shadowBlur = 10;
+            ctx.fillText(SURAH_NAME, W / 2, 220);
+
+            ctx.font = "bold 58px 'Amiri', 'Noto Naskh Arabic', serif";
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowBlur = 16;
+            wrapAndDrawText(ayahText, W / 2, H / 2, W - 320, 78);
+            ctx.shadowBlur = 0;
+
+            ctx.fillStyle = 'rgba(212,175,55,0.25)';
+            ctx.fillRect(200, H - 200, W - 400, 6);
+            ctx.fillStyle = '#d4af37';
+            ctx.fillRect(200, H - 200, (W - 400) * progress, 6);
+        }
+
+        function wrapAndDrawText(text, centerX, centerY, maxWidth, lineHeight) {
+            const words = text.split(' ');
+            const lines = [];
+            let currentLine = '';
+            for (const word of words) {
+                const testLine = currentLine ? currentLine + ' ' + word : word;
+                if (ctx.measureText(testLine).width > maxWidth && currentLine) {
+                    lines.push(currentLine);
+                    currentLine = word;
+                } else {
+                    currentLine = testLine;
+                }
+            }
+            if (currentLine) lines.push(currentLine);
+
+            const startY = centerY - ((lines.length - 1) * lineHeight) / 2;
+            lines.forEach((line, i) => {
+                ctx.fillText(line, centerX, startY + i * lineHeight);
+            });
+        }
+
+        const yieldThread = () => new Promise(r => setTimeout(r, 0));
+
+        // ---------- خط التجميع الرئيسي ----------
+        async function startPipeline() {
+            try {
+                if (window.location.protocol === 'file:') {
+                    throw new Error('لازم تفتح الملف عبر سيرفر محلي (http)، مش بفتحه المباشر (file://)');
+                }
+
+                statusText.innerText = 'جاري تحميل خط Amiri...';
+                try { await document.fonts.load("700 58px Amiri"); } catch(e) {}
+                try { await document.fonts.ready; } catch(e) {}
+
+                statusText.innerText = 'جاري تحميل صورة الخلفية...';
+                const bgImage = await loadBackgroundImage();
+                if (!bgImage) console.warn(`لم يتم العثور على ${BG_PATH} — هيتم استخدام خلفية متدرجة بديلة.`);
+
+                statusText.innerText = 'جاري جلب آيات سورة الإخلاص...';
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                const ayahs = [];
+                for (let ayah = 1; ayah <= AYAH_COUNT; ayah++) {
+                    statusText.innerText = `جاري جلب الآية ${ayah} من ${AYAH_COUNT}...`;
+                    const [text, audioBuffer] = await Promise.all([
+                        fetchAyahText(SURAH_NUMBER, ayah),
+                        fetchAyahAudioBuffer(SURAH_NUMBER, ayah, audioContext),
+                    ]);
+                    ayahs.push({ ayah, text, audioBuffer, duration: audioBuffer.duration });
+                }
+
+                let cursor = 0;
+                for (const a of ayahs) {
+                    a.startTime = cursor;
+                    cursor += a.duration;
+                    a.endTime = cursor;
+                }
+                const totalDuration = cursor;
+                const totalFrames = Math.ceil(totalDuration * FPS);
+
+                statusText.innerText = 'جاري تحضير محرك Mediabunny...';
+
+                const output = new Output({
+                    format: new Mp4OutputFormat(),
+                    target: new BufferTarget()
+                });
+
+                const videoSource = new CanvasSource(canvas, {
+                    codec: 'avc',
+                    bitrate: QUALITY_HIGH
+                });
+                output.addVideoTrack(videoSource);
+
+                const audioSource = new AudioBufferSource({
+                    codec: 'aac',
+                    bitrate: QUALITY_HIGH
+                });
+                output.addAudioTrack(audioSource);
+
+                await output.start();
+
+                for (const a of ayahs) {
+                    await audioSource.add(a.audioBuffer);
+                }
+
+                statusText.innerText = `جاري رندر الفريمات (${totalFrames} فريم)...`;
+
+                let ayahIndex = 0;
+                for (let i = 0; i < totalFrames; i++) {
+                    const t = i / FPS;
+                    const progress = i / totalFrames;
+
+                    while (ayahIndex < ayahs.length - 1 && t >= ayahs[ayahIndex].endTime) {
+                        ayahIndex++;
+                    }
+                    const currentAyah = ayahs[ayahIndex];
+
+                    drawFrame(bgImage, currentAyah.text, progress);
+                    await videoSource.add(t, 1 / FPS);
+
+                    if (i % 20 === 0) {
+                        statusText.innerText = `رندر وتشفير: ${Math.round(progress * 100)}%`;
+                        await yieldThread();
+                    }
+                }
+
+                statusText.innerText = 'جاري تجميع وحفظ الملف النهائي...';
+                await output.finalize();
+
+                const finalBuffer = output.target.buffer;
+                const blob = new Blob([finalBuffer], { type: 'video/mp4' });
+                const downloadUrl = URL.createObjectURL(blob);
+
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = OUTPUT_FILENAME;
+                a.click();
+
+                window.__ofoqFilename = OUTPUT_FILENAME;
+                window.__ofoqBase64 = arrayBufferToBase64(finalBuffer);
+                window.__ofoqStatus = 'done';
+
+                spinner.style.display = 'none';
+                statusText.innerText = 'تم إنتاج فيديو سورة الإخلاص بنجاح بفضل الله! 🎉';
+
+            } catch (err) {
+                console.error('Mediabunny Error:', err);
+                window.__ofoqStatus = 'error';
+                window.__ofoqError = err.message;
+                spinner.style.display = 'none';
+                statusText.style.color = '#ef4444';
+                statusText.innerText = 'خطأ: ' + err.message;
+            }
+        }
+
+        window.addEventListener('load', () => setTimeout(startPipeline, 500));
+    </script>
+</body>
+</html>
