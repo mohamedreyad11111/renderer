@@ -1,6 +1,6 @@
 // باذن الله — سكريبت رندر أوفق عبر Playwright
 // بيشغّل سيرفر محلي بسيط، يفتح Chrome الحقيقي (مش Chromium الافتراضي، عشان AAC يشتغل صح)،
-// يفتح scene.html (مباشر، من غير أي إعدادات خارجية)، يستنى لحد ما الرندر يخلص، ويحفظ الفيديو.
+// يفتح أي ملف مشهد (scene.html أو غيره)، يستنى لحد ما الرندر يخلص، ويحفظ الفيديو.
 
 const http = require('http');
 const fs = require('fs');
@@ -39,6 +39,7 @@ function startServer() {
 
 async function main() {
   const outDir = process.env.OFOQ_OUTDIR || path.join(ROOT, 'output');
+  const sceneFile = process.env.OFOQ_SCENE_FILE || 'scene.html';
   fs.mkdirSync(outDir, { recursive: true });
 
   console.log('بسم الله — بدء السيرفر المحلي...');
@@ -46,7 +47,7 @@ async function main() {
 
   console.log('فتح Chrome...');
   const browser = await chromium.launch({
-    channel: 'chrome', // كروم حقيقي، مش Chromium الافتراضي — عشان ترميز AAC يشتغل صح
+    channel: 'chrome',
     args: ['--autoplay-policy=no-user-gesture-required'],
   });
 
@@ -55,7 +56,7 @@ async function main() {
   page.on('console', (msg) => console.log('[page]', msg.text()));
   page.on('pageerror', (err) => console.error('[pageerror]', err.message));
 
-  const url = `http://localhost:${PORT}/scene.html`;
+  const url = `http://localhost:${PORT}/${sceneFile}`;
   console.log('فتح الصفحة: ' + url);
   await page.goto(url, { waitUntil: 'load' });
 
