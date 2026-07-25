@@ -1,0 +1,12 @@
+{
+  "name": "ofoq-render-al-ikhlas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "رندر فيديو سورة الإخلاص عبر Mediabunny + Playwright + GitHub Actions",
+  "scripts": {
+    "render": "node scripts/render.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.48.0"
+  }
+}
