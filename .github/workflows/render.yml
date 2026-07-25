@@ -1,7 +1,16 @@
-name: Ofoq Render (Surah Al-Ikhlas)
+name: Ofoq Render
 
 on:
   workflow_dispatch:
+    inputs:
+      scene_file:
+        description: 'اختر المشهد اللي عاوز ترندره'
+        required: false
+        default: 'scene.html'
+        type: choice
+        options:
+          - scene.html
+          - scene-ayat-alkursi.html
 
 permissions:
   contents: write
@@ -21,13 +30,12 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Install Arabic fonts
-        run: sudo apt-get update && sudo apt-get install -y fonts-noto fonts-hosny-amiri && fc-cache -f
-
       - name: Install Chrome + Playwright deps
         run: npx playwright install --with-deps chrome
 
       - name: Render video
+        env:
+          OFOQ_SCENE_FILE: ${{ github.event.inputs.scene_file || 'scene.html' }}
         run: npm run render
 
       - name: Upload as workflow artifact
@@ -40,7 +48,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: render-${{ github.run_number }}
-          name: "سورة الإخلاص — Render #${{ github.run_number }}"
+          name: "Ofoq Render #${{ github.run_number }} (${{ github.event.inputs.scene_file || 'scene.html' }})"
           files: output/*.mp4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
